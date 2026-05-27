@@ -18,7 +18,10 @@ class MeasurementController:
             return Response(400, {"error": "missing json.path"})
 
         ms = self.m_service.processCSV(path)
-        incidences = self.i_service.computeIncidences()
+        incidences = self.i_service.computeIncidences(mode=1)
+
+        for channel in ["vr1_a", "vr1_b", "vr2_a", "vr2_b"]:
+            self.i_service.trainPredictor(target_field=channel)
 
         self.s_service.notifySubs(incidences)
 
