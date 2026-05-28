@@ -39,5 +39,5 @@ if __name__ == "__main__":
     api = ClientApiService(http)
     controller = AppController(api, user_id="alice")
 
-    app = MainWindow(controller, m_repo, CSV_PATH)
+    app = MainWindow(controller, CSV_PATH)
     app.mainloop()

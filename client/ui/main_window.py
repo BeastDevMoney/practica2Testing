@@ -7,7 +7,6 @@ from tkinter import ttk
 
 from client.app.app_controller import AppController
 from client.domain.incidence_dto import IncidenceDTO
-from server.persistence.in_memory_measurement_repository import InMemoryMeasurementRepository
 
 BG = "#0f1117"
 SURFACE = "#1a1d27"
@@ -25,15 +24,16 @@ TYPE_META = {
     "FREQUENCY_JUMP": (AMBER, "⚡"),
 }
 
+ALLOWED_CHANNELS = {"vr1_a", "vr1_b", "vr2_a", "vr2_b"}
+
 def _type_meta(tipo: str):
     return TYPE_META.get(tipo, (ACCENT, "●"))
 
 
 class MainWindow(tk.Tk):
-    def __init__(self, controller: AppController, m_repo: InMemoryMeasurementRepository, csv_path: str):
+    def __init__(self, controller: AppController, csv_path: str):
         super().__init__()
         self.controller = controller
-        self.m_repo = m_repo
         self.csv_path = csv_path
         self._data: list[IncidenceDTO] = []
 
@@ -235,6 +235,13 @@ class MainWindow(tk.Tk):
             tk.Label(row, text=text, bg=SURFACE, fg=TEXT_DIM, font=("Helvetica", 9), anchor="w").pack(side=tk.LEFT, padx=6)
         tk.Frame(info_card, bg=BG, height=8).pack()
 
+        # ── Métricas de rendimiento ────────────────────────────────────────────
+        tk.Label(content, text="Métricas de rendimiento del modelo", bg=BG, fg=TEXT, font=("Helvetica", 13, "bold")).pack(anchor="w", pady=(20, 10))
+
+        self._metrics_frame = tk.Frame(content, bg=BG)
+        self._metrics_frame.pack(fill=tk.X)
+        self._render_metrics()
+
     # ── Acciones ──────────────────────────────────────────────────────────────
 
     def _subscribe(self):
@@ -265,26 +272,94 @@ class MainWindow(tk.Tk):
         self._show_detail(self._data[self.listbox.curselection()[0]])
 
     def _launch_plot(self):
+        target = self._channel_var.get()
+        if target not in ALLOWED_CHANNELS:
+            return
+        try:
+            margin = int(self._margin_var.get())
+        except (ValueError, tk.TclError):
+            return
+
         self._run_btn.config(state="disabled")
         self._pred_status.config(text="Generando gráficas…")
-        target = self._channel_var.get()
-        margin = str(self._margin_var.get())
+        margin_str = str(margin)
+        script = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "..", "server", "predictor", "voltage_plot.py"))
 
         def _run():
             try:
                 subprocess.run(
-                    [sys.executable,
-                     os.path.join(os.path.dirname(
-                         os.path.abspath(__file__)),
-                         "..", "..", "server", "predictor", "voltage_plot.py"),
-                     self.csv_path, target, margin],
+                    [sys.executable, script, self.csv_path, target, margin_str],
                     check=False
                 )
             finally:
                 self.after(0, lambda: self._run_btn.config(state="normal"))
                 self.after(0, lambda: self._pred_status.config(text="✓ Listo"))
+                self.after(0, self._render_metrics)
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _render_metrics(self):
+        import tempfile
+        from server.business_logic.incidence_service import PREDICTION_CACHE
+
+        for w in self._metrics_frame.winfo_children():
+            w.destroy()
+
+        channels = ["vr1_a", "vr1_b", "vr2_a", "vr2_b"]
+        label_map = {
+            "vr1_a": "Receptor 1 - Canal A",
+            "vr1_b": "Receptor 1 - Canal B",
+            "vr2_a": "Receptor 2 - Canal A",
+            "vr2_b": "Receptor 2 - Canal B",
+        }
+
+        any_found = False
+        for col, channel in enumerate(channels):
+            cache_file = f"{PREDICTION_CACHE}_{channel}.npz"
+            card = tk.Frame(self._metrics_frame, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER)
+            card.grid(row=0, column=col, padx=(0, 8) if col < 3 else 0, sticky="nsew")
+            self._metrics_frame.columnconfigure(col, weight=1)
+
+            tk.Label(card, text=label_map[channel], bg=SURFACE, fg=TEXT_DIM,
+                     font=("Helvetica", 8, "bold")).pack(anchor="w", padx=12, pady=(10, 6))
+            tk.Frame(card, bg=BORDER, height=1).pack(fill=tk.X)
+
+            if os.path.exists(cache_file):
+                try:
+                    import numpy as np
+                    data = np.load(cache_file, allow_pickle=False)
+                    mae = float(data["mae"][0]) if "mae" in data else None
+                    rmse = float(data["rmse"][0]) if "rmse" in data else None
+                    n = int(data["n_samples"][0]) if "n_samples" in data else len(data.get("y_real", []))
+                    me = float(np.mean(data["y_pred"] - data["y_real"])) if "y_real" in data and "y_pred" in data else None
+
+                    rows = []
+                    if mae is not None:
+                        rows.append(("MAE", f"{mae:.2f} mV", ACCENT))
+                    if rmse is not None:
+                        rows.append(("RMSE", f"{rmse:.2f} mV", ACCENT))
+                    if me is not None:
+                        rows.append(("Error medio", f"{me:+.2f} mV", AMBER if abs(me) > 15 else ACCENT))
+                    rows.append(("Muestras test", str(n), ACCENT))
+
+                    for metric, value, color in rows:
+                        mrow = tk.Frame(card, bg=SURFACE)
+                        mrow.pack(fill=tk.X, padx=12, pady=2)
+                        tk.Label(mrow, text=metric, bg=SURFACE, fg=TEXT_DIM,
+                                 font=("Helvetica", 8)).pack(side=tk.LEFT)
+                        tk.Label(mrow, text=value, bg=SURFACE, fg=color,
+                                 font=("Helvetica", 10, "bold")).pack(side=tk.RIGHT)
+                    any_found = True
+                except Exception:
+                    tk.Label(card, text="Error al leer cache", bg=SURFACE, fg=RED,
+                             font=("Helvetica", 9)).pack(padx=12, pady=8)
+            else:
+                tk.Label(card, text="Sin datos\n(ejecuta ▶ Ver gráficas)", bg=SURFACE, fg=TEXT_DIM,
+                         font=("Helvetica", 8), justify="center").pack(padx=12, pady=10)
+
+            tk.Frame(card, bg=BG, height=8).pack()
 
     def _on_close(self):
         self.destroy()

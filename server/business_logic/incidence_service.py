@@ -35,6 +35,11 @@ class IncidenceService:
 
         times_epoch = np.array([t.timestamp() for t in times], dtype=np.float64)
 
+        from sklearn.metrics import mean_absolute_error, mean_squared_error
+        mae = float(mean_absolute_error(y_real, y_pred))
+        rmse = float(np.sqrt(mean_squared_error(y_real, y_pred)))
+        n_samples = len(y_real)
+
         cache_file = f"{PREDICTION_CACHE}_{target_field}.npz"
         np.savez(
             cache_file,
@@ -42,5 +47,8 @@ class IncidenceService:
             y_real=y_real,
             y_pred=y_pred,
             target_field=np.array([target_field]),
+            mae=np.array([mae]),
+            rmse=np.array([rmse]),
+            n_samples=np.array([n_samples]),
         )
         print(f"[IncidenceService] Entrenamiento completado. Cache guardado en {cache_file}")
